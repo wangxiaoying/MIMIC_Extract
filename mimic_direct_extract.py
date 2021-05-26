@@ -327,10 +327,12 @@ def save_numerics(
     return X
 
 def save_notes(notes, outPath=None, notes_h5_filename=None):
+    start_time = time.time()
     notes_id_cols = list(set(ID_COLS).intersection(notes.columns))# + ['row_id'] TODO: what is row_id?
     notes_metadata_cols = ['chartdate', 'charttime', 'category', 'description']
 
     notes.set_index(notes_id_cols + notes_metadata_cols, inplace=True)
+    print("takes %.3f sec until finish setting index" % (time.time() - start_time))
     # preprocessing!!
     # TODO(Scispacy)
     # TODO(improve)
@@ -358,6 +360,7 @@ def save_notes(notes, outPath=None, notes_h5_filename=None):
     nlp = spacy.load('en_core_web_sm') # Maybe try lg model?
     nlp.add_pipe(sbd_component, before='parser')  # insert before the parser
     disabled = nlp.disable_pipes('ner')
+    print("takes %.3f sec until finish setting nlp" % (time.time() - start_time))
 
     def process_sections_helper(section, note, processed_sections):
         processed_section = nlp(section['sections'])
@@ -398,9 +401,11 @@ def save_notes(notes, outPath=None, notes_h5_filename=None):
             #raise e
 
     notes = notes.apply(process_frame_text, axis=1)
+    print("takes %.3f sec until finish applying" % (time.time() - start_time))
 
     if outPath is not None and notes_h5_filename is not None:
         notes.to_hdf(os.path.join(outPath, notes_h5_filename), 'notes')
+        print("takes %.3f sec until store to hdf" % (time.time() - start_time))
     return notes
 
 def save_icd9_codes(codes, outPath, codes_h5_filename):
@@ -697,7 +702,8 @@ if __name__ == '__main__':
     print("Running!")
     # Construct the argument parse and parse the arguments
     ap = argparse.ArgumentParser()
-    ap.add_argument('--out_path', type=str, default= '/scratch/{}/phys_acuity_modelling/data'.format(os.environ['USER']),
+    # ap.add_argument('--out_path', type=str, default= '/scratch/{}/phys_acuity_modelling/data'.format(os.environ['USER']),
+    ap.add_argument('--out_path', type=str, default=os.path.expandvars("$MIMIC_EXTRACT_CODE_DIR/output/"),
                     help='Enter the path you want the output')
     ap.add_argument('--resource_path',
         type=str,
@@ -718,7 +724,7 @@ if __name__ == '__main__':
     ap.add_argument('--extract_codes', type=int, default=1,
                     help='Whether or not to extract ICD9 codes: 0 - no extraction, ' +
                     '1 - extract if not present in the data directory, 2 - extract even if there is data')
-    ap.add_argument('--extract_notes', type=int, default=1,
+    ap.add_argument('--extract_notes', type=int, default=0,
                     help='Whether or not to extract notes: 0 - no extraction, ' +
                     '1 - extract if not present in the data directory, 2 - extract even if there is data')
     ap.add_argument('--pop_size', type=int, default=0,
@@ -727,18 +733,20 @@ if __name__ == '__main__':
     ap.add_argument('--var_limits', type=int, default=1,
                     help='Whether to create a version of the data with variable limits included. ' +
                     '1 - apply variable limits, 0 - do not apply variable limits')
-    ap.add_argument('--plot_hist', type=int, default=1,
+    ap.add_argument('--plot_hist', type=int, default=0,
                     help='Whether to plot the histograms of the data')
 
-    ap.add_argument('--psql_host', type=str, default=None,
+    ap.add_argument('--psql_host', type=str, default='localhost',
                     help='Postgres host. Try "/var/run/postgresql/" for Unix domain socket errors.')
     ap.add_argument('--psql_dbname', type=str, default='mimic',
                     help='Postgres database name.')
-    ap.add_argument('--psql_schema_name', type=str, default='mimiciii',
+    ap.add_argument('--psql_schema_name', type=str, default='public,mimiciii',
                     help='Postgres database name.')
-    ap.add_argument('--psql_user', type=str, default=None,
+    ap.add_argument('--psql_port', type=int, default=25432,
+                    help='Postgres port.')
+    ap.add_argument('--psql_user', type=str, default='postgres',
                     help='Postgres user.')
-    ap.add_argument('--psql_password', type=str, default=None,
+    ap.add_argument('--psql_password', type=str, default='postgres',
                     help='Postgres password.')
     ap.add_argument('--no_group_by_level2', action='store_false', dest='group_by_level2', default=True,
                     help="Don't group by level2.")
@@ -802,12 +810,14 @@ if __name__ == '__main__':
 
     dbname = args['psql_dbname']
     schema_name = args['psql_schema_name']
-    query_args = {'dbname': dbname}
+    query_args = {'dbname': dbname, 'port': args['psql_port']}
     if args['psql_host'] is not None: query_args['host'] = args['psql_host']
     if args['psql_user'] is not None: query_args['user'] = args['psql_user']
     if args['psql_password'] is not None: query_args['password'] = args['psql_password']
 
     querier = MIMIC_Querier(query_args=query_args, schema_name=schema_name)
+
+    mimic_start = time.time()
 
     #############
     # Population extraction
@@ -845,13 +855,14 @@ if __name__ == '__main__':
         querier.add_exclusion_criteria_from_df(data, columns=['hadm_id', 'subject_id'])
         print("loaded static_data")
 
+    print("takes %.3f sec after populataion extraction" % (time.time() - mimic_start))
     #############
     # If there is numerics extraction
     X = None
     if (args['extract_numerics'] == 0 | (args['extract_numerics'] == 1) ) & isfile(os.path.join(outPath, dynamic_hd5_filename)):
-        print("Reloading X from %s" % os.path.join(outPath, dynamic_hd5_filename))
-        X = pd.read_hdf(os.path.join(outPath, dynamic_hd5_filename))
-    elif (args['extract_numerics'] == 1 & (not isfile(os.path.join(outPath, dynamic_hd5_filename)))) | (args['extract_numerics'] == 2):
+    #     print("Reloading X from %s" % os.path.join(outPath, dynamic_hd5_filename))
+    #     X = pd.read_hdf(os.path.join(outPath, dynamic_hd5_filename))
+    # elif (args['extract_numerics'] == 1 & (not isfile(os.path.join(outPath, dynamic_hd5_filename)))) | (args['extract_numerics'] == 2):
         print("Extracting vitals data...")
         start_time = time.time()
 
@@ -900,7 +911,11 @@ if __name__ == '__main__':
           and l.valuenum > 0 -- lab values cannot be 0 and cannot be negative
         ;
         """.format(icuids=','.join(icuids_to_keep), chitem=','.join(chartitems_to_keep), lbitem=','.join(labitems_to_keep))
+        # print(query)
+        # exit(0)
         X = pd.read_sql_query(query, con)
+        print("  db query finished after %.3f sec" % (time.time() - start_time))
+        X.to_hdf(os.path.join(outPath, 'X_raw.h5'), 'X_raw')
 
         itemids = set(X.itemid.astype(str))
 
@@ -915,7 +930,9 @@ if __name__ == '__main__':
 
         cur.close()
         con.close()
-        print("  db query finished after %.3f sec" % (time.time() - start_time))
+        print("  db query ditems finished after %.3f sec" % (time.time() - start_time))
+        I.to_hdf(os.path.join(outPath, 'I_raw.h5'), 'I_raw')
+        exit(0)
         X = save_numerics(
             data, X, I, var_map, var_ranges, outPath, dynamic_filename, columns_filename, subjects_filename,
             times_filename, dynamic_hd5_filename, group_by_level2=args['group_by_level2'], apply_var_limit=args['var_limits'],
@@ -925,6 +942,7 @@ if __name__ == '__main__':
     if X is None: print("SKIPPED vitals_hourly_data")
     else:         print("LOADED vitals_hourly_data")
 
+    print("takes %.3f sec after numeric extraction" % (time.time() - mimic_start))
     #############
     # If there is codes extraction
     C = None
@@ -939,6 +957,7 @@ if __name__ == '__main__':
     if C is None: print("SKIPPED codes_data")
     else:         print("LOADED codes_data")
 
+    print("takes %.3f sec after codes extraction" % (time.time() - mimic_start))
     #############
     # If there is notes extraction
     N = None
@@ -953,6 +972,7 @@ if __name__ == '__main__':
     if N is None: print("SKIPPED notes_data")
     else:         print("LOADED notes_data")
 
+    print("takes %.3f sec after notes extraction" % (time.time() - mimic_start))
     #############
     # If there is outcome extraction
     Y = None
@@ -966,6 +986,7 @@ if __name__ == '__main__':
             outcome_columns_filename, outcome_data_schema, host=args['psql_host'],
         )
 
+    print("takes %.3f sec after save_outcome" % (time.time() - mimic_start))
 
     if X is not None: print("Numerics", X.shape, X.index.names, X.columns.names)
     if Y is not None: print("Outcomes", Y.shape, Y.index.names, Y.columns.names, Y.columns)
@@ -1019,6 +1040,7 @@ if __name__ == '__main__':
     if C is not None: C.to_hdf(os.path.join(outPath, dynamic_hd5_filt_filename), 'codes')
     data.to_hdf(os.path.join(outPath, dynamic_hd5_filt_filename), 'patients', format='table')
     #fencepost.to_hdf(os.path.join(outPath, dynamic_hd5_filt_filename), 'fencepost')
+    print("takes %.3f sec after data to hdf" % (time.time() - mimic_start))
 
     #############
     #X.to_hdf(os.path.join(outPath, dynamic_hd5_filt_filename), 'X')
@@ -1059,3 +1081,5 @@ if __name__ == '__main__':
         print('\n')
 
     print('Done!')
+
+    print("takes %.3f sec for entire process" % (time.time() - mimic_start))
